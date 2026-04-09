@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.jpg" alt="SentinelClaw" width="100%">
+</p>
+
 # SentinelClaw
 
 **The security gateway for autonomous AI agents. Secrets they never see. Commands they can't bypass.**
