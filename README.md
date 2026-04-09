@@ -3,7 +3,7 @@
 **The security gateway for autonomous AI agents. Secrets they never see. Commands they can't bypass.**
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/Rust-2021-edition-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/Rust-2021--edition-ed5a02?logo=rust&logoColor=white)](https://doc.rust-lang.org/book/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
 [![Version](https://img.shields.io/badge/Version-0.0.1-green.svg)](CHANGELOG.md)
 
@@ -53,33 +53,7 @@ Agent calls API → Sentinel materializes real key → request fires → key scr
 
 SentinelClaw uses a **hybrid model** — the security engine runs in Docker for isolation, while agents run on the host for performance.
 
-```
-┌─────────────────────────────────────────────────┐
-│                  Host Machine                    │
-│                                                  │
-│   Agent (Claude, AutoGPT, etc.)                  │
-│       │                                          │
-│       ▼                                          │
-│   Sentinel Shim (LD_PRELOAD)                     │
-│       │                                          │
-│       ▼                                          │
-│   ┌──────────────────────────────────┐           │
-│   │      Sentinel Gateway (Docker)   │           │
-│   │  ┌─────────┐  ┌──────────────┐   │           │
-│   │  │  Proxy   │  │  Secret Vault │   │           │
-│   │  │ (Axum)   │  │  (AES-256)   │   │           │
-│   │  └────┬─────┘  └──────┬───────┘   │           │
-│   │       │               │           │           │
-│   │  ┌────▼───────────────▼───────┐   │           │
-│   │  │     Shield & Harness       │   │           │
-│   │  │  (Intent Audit + PII)      │   │           │
-│   │  └────────────────────────────┘   │           │
-│   └──────────────────┬───────────────┘           │
-│                      │                            │
-│                      ▼                            │
-│              LLM Provider / Internet              │
-└─────────────────────────────────────────────────┘
-```
+![SentinelClaw Architecture](assets/architecture.jpg)
 
 ---
 
