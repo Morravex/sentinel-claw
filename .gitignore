@@ -1,0 +1,60 @@
+# --- Sentinel v2 Repository Ignore ---
+
+# Build Artifacts
+/target/
+
+# Database Files
+/sentinel.db
+/sentinel.db-shm
+/sentinel.db-wal
+
+# Environment and Secrets
+.env
+.env.*
+!.env.example
+
+# Logs and Temporary files
+*.log
+*.tmp
+*.bak
+session_*.txt
+session_changes.txt
+.temp_patterns/
+/shim/build/
+/shims/
+
+# OS Specific Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE - Visual Studio Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# IDE - IntelliJ/JetBrains
+.idea/
+*.iws
+*.iml
+*.ipr
+
+# IDE - Vim
+[._]*.s[a-v][a-z]
+!*.svg
+[._]sw[a-p]
+[._]s[a-rt-v][a-z]
+[._]ss[a-z]
+*.un~
+Session.vim
+.netrwhist
+
+# Rust specific
+**/*.rs.bk

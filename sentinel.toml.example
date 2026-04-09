@@ -1,0 +1,39 @@
+# Sentinel Config
+
+[general]
+mode = "hybrid" # Options: "local_only", "hybrid", "cloud_only"
+sensitive_parsing = true
+socket_path = "/tmp/sentinel_test.sock"
+
+[agents]
+openclaw = 8080
+hermes = 8081
+aider = 8082
+autogpt = 8083
+babyagi = 8084
+gpthinker = 8085
+meta = 8086
+mistral = 8087
+devin = 8088
+default = 8089
+
+[local]
+model = "gemma:2b"
+host = "http://localhost:11434"
+
+[cloud]
+provider = "openrouter"
+model = "qwen/qwen3.6-plus:free"
+base_url = "https://openrouter.ai/api/v1"
+
+[policy]
+pii_redaction = true # [PRODUCTION] Redacts E-mails/Phones.
+deny_list = ["rm -rf /", "sudo", "unlink", "truncate", "shred", "pkill -f sentinel"]
+restricted_paths = [".env", "/etc/passwd", "/etc/shadow", ".git", ".openclaw", "id_rsa", "config"]
+
+[providers]
+groq = "https://api.groq.com/openai/v1"
+openai = "https://api.openai.com/v1"
+anthropic = "https://api.anthropic.com/v1"
+openrouter = "https://openrouter.ai/api/v1"
+zai = "https://api.z.ai/api/coding/paas/v4"
