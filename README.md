@@ -51,7 +51,7 @@ Agent calls API → Sentinel materializes real key → request fires → key scr
 
 ## Architecture
 
-SentinelClaw uses a **hybrid model** — the security engine runs in Docker for isolation, while agents run on the host for performance.
+SentinelClaw uses a **hybrid model** — the security engine (proxy, vault, shield) runs inside a Docker container for hardening, while agents run on the host and are intercepted by kernel-level shims and traps that transparently route all traffic through the gateway.
 
 ![SentinelClaw Architecture](assets/architecture.jpg)
 
