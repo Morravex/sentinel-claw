@@ -252,6 +252,33 @@ sentinel-claw/
 
 ---
 
+## Writing Example Keys in Documentation
+
+SentinelClaw automatically scrubs API keys from agent-visible content. To show example keys in docs, config templates, and comments without them being scrubbed:
+
+**Comment lines** (`#`, `//`, `/*`, `--`) are auto-skipped:
+```bash
+# Example: OPENAI_API_KEY=sk-proj-abc123...  ← not scrubbed
+```
+
+**`sentinel:example`** protects the next line:
+```toml
+# sentinel:example
+OPENAI_API_KEY=sk-proj-abc123def456...  ← not scrubbed
+```
+
+**`sentinel:ignore:start/end`** protects a block:
+```
+# sentinel:ignore:start
+OPENAI_API_KEY=sk-proj-example-key
+AWS_SECRET_KEY=AKIAFAKEEXAMPLE
+# sentinel:ignore:end
+```
+
+See [EXAMPLE_KEYS.md](EXAMPLE_KEYS.md) for the full guide.
+
+---
+
 ## Contributing
 
 Contributions are welcome. Here's how to get started:
