@@ -8,6 +8,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-2021--edition-ed5a02?logo=rust&logoColor=white)](https://doc.rust-lang.org/book/)
+[![X/Twitter](https://img.shields.io/badge/X-sentinelclaw__ai-000000?logo=x&logoColor=white)](https://x.com/sentinelclaw_ai)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
 [![Version](https://img.shields.io/badge/Version-0.0.1-green.svg)](CHANGELOG.md)
 
