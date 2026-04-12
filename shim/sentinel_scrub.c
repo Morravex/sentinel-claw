@@ -76,6 +76,7 @@ typedef ssize_t (*real_pread_t)(int fd, void *buf, size_t count, off_t offset);
 typedef char*   (*real_fgets_t)(char *s, int size, FILE *stream);
 typedef void*   (*real_mmap_t)(void *addr, size_t length, int prot, int flags, int fd, off_t offset);
 typedef void*   (*real_mremap_t)(void *old_address, size_t old_size, size_t new_size, int flags, ...);
+typedef int     (*real_execve_t)(const char *pathname, char *const argv[], char *const envp[]);
 
 static real_read_t   real_read   = NULL;
 static real_readv_t  real_readv  = NULL;
@@ -83,6 +84,10 @@ static real_pread_t  real_pread  = NULL;
 static real_fgets_t  real_fgets  = NULL;
 static real_mmap_t   real_mmap   = NULL;
 static real_mremap_t real_mremap = NULL;
+static real_execve_t real_execve = NULL;
+
+// Saved LD_PRELOAD value — set once at init, re-injected on every execve
+static char g_saved_ld_preload[512] = {0};
 
 // --- Logging ---
 static void shim_log(const char *fmt, ...) {
@@ -405,14 +410,23 @@ static void __attribute__((constructor)) sentinel_shim_init(void) {
     real_fgets  = (real_fgets_t)dlsym(RTLD_NEXT, "fgets");
     real_mmap   = (real_mmap_t)dlsym(RTLD_NEXT, "mmap");
     real_mremap = (real_mremap_t)dlsym(RTLD_NEXT, "mremap");
+    real_execve = (real_execve_t)dlsym(RTLD_NEXT, "execve");
 
     if (!real_read || !real_readv) {
         // Can't function without these
         return;
     }
 
+    // Save LD_PRELOAD value so we can re-inject it on execve.
+    // This prevents agents from bypassing sentinel by unsetting LD_PRELOAD.
+    const char *ld_preload = getenv("LD_PRELOAD");
+    if (ld_preload && ld_preload[0] != '\0') {
+        snprintf(g_saved_ld_preload, sizeof(g_saved_ld_preload), "%s", ld_preload);
+    }
+
     g_initialized = 1;
-    shim_log("Sentinel scrub shim loaded (pid=%d)", getpid());
+    shim_log("Sentinel scrub shim loaded (pid=%d, ld_preload=%s)", getpid(),
+             g_saved_ld_preload[0] ? g_saved_ld_preload : "(none)");
 }
 
 // --- Intercepted functions ---
@@ -661,6 +675,73 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         }
     }
     return result;
+}
+
+// =============================================================================
+// EXECVE HOOK — Re-inject LD_PRELOAD on every process spawn
+//
+// This is the critical bypass fix. An agent can run:
+//   unset LD_PRELOAD; /usr/bin/python3 -c "import os; print(os.environ)"
+// Without this hook, the child runs clean (no shim). With this hook, the shim
+// intercepts execve() and re-injects LD_PRELOAD before the child even starts.
+//
+// The agent NEVER sees LD_PRELOAD in its own environment (we don't restore it
+// in the agent's process — we only inject it into children it spawns).
+// =============================================================================
+
+// Check if an envp array contains LD_PRELOAD
+static int envp_has_ld_preload(char *const envp[]) {
+    if (!envp) return 0;
+    for (int i = 0; envp[i] != NULL; i++) {
+        if (strncmp(envp[i], "LD_PRELOAD=", 11) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Build a new envp array with LD_PRELOAD injected.
+// Returns a malloc'd array that the caller must free.
+// Original envp strings are reused (not copied).
+static char **inject_ld_preload(char *const envp[]) {
+    // Count existing entries
+    int count = 0;
+    if (envp) {
+        while (envp[count] != NULL) count++;
+    }
+
+    // Allocate new array: count + 1 (LD_PRELOAD) + 1 (NULL terminator)
+    char **new_envp = malloc(sizeof(char *) * (count + 2));
+    if (!new_envp) return NULL;
+
+    // Copy existing entries
+    for (int i = 0; i < count; i++) {
+        new_envp[i] = (char *)envp[i];
+    }
+
+    // Inject LD_PRELOAD as the last entry (before NULL)
+    new_envp[count]     = g_saved_ld_preload;  // e.g. "LD_PRELOAD=/opt/sentinel/shim/build/libsentry_scrub.so"
+    new_envp[count + 1] = NULL;
+
+    return new_envp;
+}
+
+int execve(const char *pathname, char *const argv[], char *const envp[]) {
+    if (!real_execve) real_execve = (real_execve_t)dlsym(RTLD_NEXT, "execve");
+
+    // Only inject if the shim is active and we have a saved LD_PRELOAD
+    if (g_initialized && g_saved_ld_preload[0] != '\0' && !envp_has_ld_preload(envp)) {
+        shim_log("Re-injecting LD_PRELOAD for exec: %s", pathname);
+        char **new_envp = inject_ld_preload(envp);
+        if (new_envp) {
+            int result = real_execve(pathname, argv, new_envp);
+            free(new_envp);
+            return result;
+        }
+    }
+
+    // LD_PRELOAD already present or shim not active — pass through
+    return real_execve(pathname, argv, envp);
 }
 
 void *mremap(void *old_address, size_t old_size, size_t new_size, int flags, ...) {

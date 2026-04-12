@@ -68,9 +68,9 @@ pub fn run_agent(agent_name: Option<&str>, cmd_str: &str, args: &[String]) {
     println!("🛡️  Sentinel v0.0.1: Initializing Bare-Metal Airgap...");
 
     // === Layer 0: LD_PRELOAD Shim (Universal libc interception) ===
-    let shim_path = std::env::current_dir()
-        .unwrap_or_default()
-        .join("shim/build/libsentry_scrub.so");
+    // Shims live in /opt/sentinel/ — root-owned, outside /home, agent-proof.
+    let sentinel_root = PathBuf::from("/opt/sentinel");
+    let shim_path = sentinel_root.join("shim/build/libsentry_scrub.so");
 
     if shim_path.exists() {
         println!("   [+] LD_PRELOAD Shim: {} (secret buffer scrubbing)", shim_path.display());
@@ -80,6 +80,9 @@ pub fn run_agent(agent_name: Option<&str>, cmd_str: &str, args: &[String]) {
 
     // === Layer 1: Landlock LSM (Filesystem access control) ===
     apply_landlock_restrictions();
+
+    // === Watchdog: Establish integrity baseline after shims are configured ===
+    crate::watchdog::snapshot_integrity();
 
     let mut ca_path = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
     ca_path.push(".sentinel");
@@ -103,12 +106,12 @@ pub fn run_agent(agent_name: Option<&str>, cmd_str: &str, args: &[String]) {
 
     // Prevent Recursive Shimming
     // We must find the REAL binary to execute, bypassing our own shims
-    let shim_dir = std::env::current_dir().unwrap_or_default().join("shims");
+    let shim_dir = sentinel_root.join("shims");
     let shim_dir_str = shim_dir.to_string_lossy();
-    
     let current_path = std::env::var("PATH").unwrap_or_default();
-    let clean_path = current_path.split(':')
-        .filter(|&part| part != shim_dir_str && !part.contains("/sentinel-claw-v0.0.1/shims"))
+    let clean_path = current_path
+        .split(':')
+        .filter(|&part| part != shim_dir_str && !part.contains("/sentinel/shims"))
         .collect::<Vec<_>>()
         .join(":");
 
@@ -657,7 +660,35 @@ fn apply_landlock_restrictions() {
             }
         }
 
-        // 4. Restrict sensitive paths — read-only for /etc
+        // 4. Restrict sentinel's own files — read-only for /opt/sentinel
+        // The agent child can read shims (to resolve real binaries) but cannot
+        // delete or modify them. This works because /opt is separate from /home.
+        let sentinel_fd = libc::open(
+            std::ffi::CString::new("/opt/sentinel").unwrap().as_ptr(),
+            libc::O_PATH | libc::O_DIRECTORY,
+            0,
+        );
+        if sentinel_fd >= 0 {
+            let read_exec_only = LANDLOCK_ACCESS_FS_READ_FILE
+                | LANDLOCK_ACCESS_FS_READ_DIR
+                | LANDLOCK_ACCESS_FS_EXECUTE;
+            let path_attr = LandlockPathBeneathAttr {
+                allowed_access: read_exec_only,
+                parent_fd: sentinel_fd,
+                _pad: 0,
+            };
+            let _ = libc::syscall(
+                445,
+                ruleset_fd,
+                LANDLOCK_RULE_PATH_BENEATH,
+                &path_attr as *const LandlockPathBeneathAttr,
+                0u64,
+            );
+            libc::close(sentinel_fd);
+            println!("   [+] Landlock: /opt/sentinel is read-only for agent child.");
+        }
+
+        // 5. Restrict sensitive paths — read-only for /etc
         let etc_fd = libc::open(
             std::ffi::CString::new("/etc").unwrap().as_ptr(),
             libc::O_PATH | libc::O_DIRECTORY,

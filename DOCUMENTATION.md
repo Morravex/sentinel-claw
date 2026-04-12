@@ -37,6 +37,9 @@ When running an agent via `sentinel run <command>`, Sentinel acts as a user-spac
 Sentinel protects itself from the very agents it supervises.
 1.  **Kill-Switch Interception**: The Seccomp-BPF filter traps `SYS_KILL` attempts. If an agent tries to send a signal to the Sentinel Gateway PID (or any broad range that includes it), the syscall is blocked and returned as `-EPERM`.
 2.  **Ptrace Preemption**: The supervisor detects if an agent attempts to call `ptrace()` on external processes to bypass tracing.
+3.  **Shim Self-Protection**: Shims are installed to `/opt/sentinel/shims/` (root-owned, 755). Landlock restricts agent child processes to read-only + execute on `/opt/sentinel/`. Agents cannot delete or modify shim binaries.
+4.  **LD_PRELOAD Persistence (execve Hook)**: The C shim hooks `execve()` at the libc level. Before every child process spawn, the shim checks if `LD_PRELOAD` is present in the environment. If the agent has unset it, the shim silently re-injects it. The agent never sees the restoration — only its children are protected.
+5.  **Self-Protection Watchdog**: A background monitor (30-second interval) checks shell profile integrity, shims directory existence, and LD_PRELOAD state. On any tamper detection, an alert is sent via Telegram and logged to `sentinel-audit.log`.
 
 ### 🔑 Dynamic TLS Interception (MitM)
 To audit encrypted "Hands" (custom scripts making HTTPS calls), Sentinel:
@@ -69,8 +72,8 @@ Sentinel provides 40+ transparent host-to-container wrappers via the **[`setup.s
 
 ### 🚀 Usage:
 ```bash
-# Add shims to your path
-export PATH="$(pwd)/shims:$PATH"
+# Shims are auto-injected into your PATH by setup.sh
+# Located at /opt/sentinel/shims/ (root-owned, agent-proof)
 
 # Now any host program can use Ghost IDs
 aws s3 ls --profile sentinel_secret_aws_1
@@ -81,7 +84,7 @@ aws s3 ls --profile sentinel_secret_aws_1
 ## 4. 🔏 Physical Security & Integrity
 
 -   **At-Rest Encryption**: Using **PBKDF2** (100k rounds) to derive the master key from your unique `SENTINEL_PAIRING_KEY`.
--   **Agent Port Isolation**: Each agent's vault (`.env-hermes`, etc.) is strictly isolated. One agent cannot access the secrets of another unless explicit cross-mapping is configured.
+-   **Agent Port Isolation**: Each agent's vault (`.env-<name>`) is strictly isolated. One agent cannot access the secrets of another unless explicit cross-mapping is configured.
 -   **Remote Approval**: Every materialized command can be routed to your **Telegram Bridge** for final manual authorization.
 
 ### 🛡️ Sovereign PII Vaulting
@@ -98,7 +101,7 @@ For high-risk operations, Sentinel provides an "Undo" layer:
 Sentinel automatically identifies agents based on their execution path:
 1.  **Leaf-First Search**: Sentinel scans the command path backwards from the filename (e.g., `dist/entry.js`).
 2.  **Generic Filtering**: It ignores standard fillers (`node`, `bin`, `src`, `env`) to find the sovereign project folder.
-3.  **Identity Suffixing**: It can strip architectural suffixes (e.g., `-gateway`, `-cli`) to identify the core agent (e.g., `openclaw`, `hermes`).
+3.  **Identity Suffixing**: It can strip architectural suffixes (e.g., `-gateway`, `-cli`) to identify the core agent.
 4.  **Automatic Provisioning**: Once identified, Sentinel injects the `SENTINEL_AGENT_NAME` tag into the environment for real-time telemetry.
 
 **Sentinel Identity. Zero-Footprint. Infinite Security.**

@@ -24,6 +24,16 @@ clear
 echo "🛡️  SentinelClaw v0.0.1: Sentinel Security Appliance Setup"
 echo "------------------------------------------------------"
 
+# 0. Root check for /opt/sentinel installation
+SENTINEL_ROOT="/opt/sentinel"
+if [ "$(id -u)" -ne 0 ]; then
+    echo "❌ ERROR: setup.sh must run as root (sudo ./setup.sh)"
+    echo "   Sentinel shims are installed to $SENTINEL_ROOT (root-owned, agent-proof)."
+    echo "   The sentinel binary and runtime data stay in your project directory."
+    exit 1
+fi
+echo "✅ Running as root — shims will be installed to $SENTINEL_ROOT (protected from agents)."
+
 # 1. Docker-Only Check
 echo "🔍 Checking Docker Readiness..."
 check_dep() {
@@ -98,26 +108,27 @@ for i in {1..10}; do
 done
 
 # 4. Generate Sentinel Shims (Direct-to-Hypervisor)
-mkdir -p shims
-echo "🛰️  Generating Sentinel Shims (Comprehensive Runtime Coverage)..."
+# Shims go to /opt/sentinel/shims — root-owned, outside /home, agent-proof.
+mkdir -p "$SENTINEL_ROOT/shims"
+echo "🛰️  Generating Sentinel Shims → $SENTINEL_ROOT/shims/ (Comprehensive Runtime Coverage)..."
 SENTINEL_BIN="$(pwd)/target/release/sentinel"
 
 create_shim() {
     local cmd=$1
     # We use a smart shim that detects if it's already inside a Sentinel cage
-    cat <<EOF > "shims/$cmd"
+    cat <<EOF > "$SENTINEL_ROOT/shims/$cmd"
 #!/bin/bash
 if [ "\$SENTINEL_ACTIVE" = "1" ]; then
     # Already in the cage, execute the real binary
     # We bypass the shims by temporarily removing them from PATH
-    REAL_PATH=\$(PATH=\$(echo "\$PATH" | sed -e "s|$SHIM_PATH:||g" -e "s|:\$SHIM_PATH||g") which "$cmd")
+    REAL_PATH=\$(PATH=\$(echo "\$PATH" | sed -e "s|$SHIMS_PATH:||g" -e "s|:\$SHIMS_PATH||g") which "$cmd")
     exec "\$REAL_PATH" "\$@"
 else
     # Not in the cage, enter it
     exec "$SENTINEL_BIN" run "$cmd" "\$@"
 fi
 EOF
-    chmod +x "shims/$cmd"
+    chmod +x "$SENTINEL_ROOT/shims/$cmd"
 }
 
 # Expanded list of runtimes and tools for system-wide coverage
@@ -135,20 +146,27 @@ RUNTIMES=(
 for rt in "${RUNTIMES[@]}"; do
     create_shim "$rt"
 done
+# Lock shims directory — root:root 755, agent cannot modify or delete
+chown -R root:root "$SENTINEL_ROOT/shims"
+chmod -R 755 "$SENTINEL_ROOT/shims"
+echo "   ✅ Shims locked: root:root 755 at $SENTINEL_ROOT/shims/"
+
 echo "   ✅ System-Wide Secret Materialization Mesh Ready."
 
 # 5. Global Path Injection (Automation)
 echo "💉 Injecting Sentinel Mesh into Shell Profile..."
-SHIM_PATH="$(pwd)/shims"
-LINE="export PATH=\"$SHIM_PATH:\$PATH\""
+SHIMS_PATH="$SENTINEL_ROOT/shims"
+LINE="export PATH=\"$SHIMS_PATH:\$PATH\""
 
 update_profile() {
     local profile=$1
     if [ -f "$profile" ]; then
-        if ! grep -q "$SHIM_PATH" "$profile"; then
+        if ! grep -q "$SHIMS_PATH" "$profile"; then
             echo "" >> "$profile"
-            echo "# --- SENTINEL CLAW AUTOMATIC SHIMS ---" >> "$profile"
+            echo "# --- SENTINEL CLAW SHIMS [BEGIN] ---" >> "$profile"
+            echo "# Managed by sentinel-claw-v2 setup.sh — do not edit between markers" >> "$profile"
             echo "$LINE" >> "$profile"
+            echo "# --- SENTINEL CLAW SHIMS [END] ---" >> "$profile"
             echo "   ✅ Path injected into $profile"
         else
             echo "   ℹ️  Sentinel path already exists in $profile"

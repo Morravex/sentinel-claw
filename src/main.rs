@@ -22,6 +22,7 @@ use sentinel::logger;
 use sentinel::dashboard;
 use sentinel::launcher;
 use sentinel::config;
+use sentinel::watchdog;
 
 /**
  * Sentinel: The Autonomous Security Gateway (v0.0.1)
@@ -222,8 +223,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::spawn(async move {
             bridge_cloned.start_polling().await;
         });
+
+        // 5.1 Start Self-Protection Watchdog
+        watchdog::snapshot_integrity();
+        watchdog::start_monitor(bridge.bot_token(), bridge.chat_id());
+        println!("🛡️ Watchdog: Self-protection monitor active.");
     } else {
         println!("⚠️ Sentinel Bridge disabled (Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID in .env)");
+        // Still snapshot integrity even without bridge alerts
+        watchdog::snapshot_integrity();
     }
     
     // Keep alive

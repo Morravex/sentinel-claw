@@ -21,3 +21,4 @@ pub mod bridge;
 pub mod logger;
 pub mod dashboard;
 pub mod launcher;
+pub mod watchdog;

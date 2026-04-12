@@ -33,6 +33,7 @@ use std::sync::RwLock;
 
 pub struct TelegramBridge {
     bot: Bot,
+    bot_token: String,
     chat_id: String,
     pending: Arc<DashMap<String, oneshot::Sender<CommandDecision>>>,
     history: Arc<DashMap<String, bool>>, // Command -> Allowed
@@ -105,6 +106,7 @@ impl TelegramBridge {
 
         Self {
             bot: Bot::new(bot_token),
+            bot_token: bot_token.to_string(),
             chat_id: chat_id.to_string(),
             pending,
             history,
@@ -494,5 +496,22 @@ impl TelegramBridge {
 
     pub fn snapshot_enabled(&self) -> bool {
         *self.snapshot_enabled.read().unwrap()
+    }
+
+    /// Send a tamper-alert message to the configured Telegram chat.
+    pub async fn send_tamper_alert(&self, message: &str) {
+        let _ = self.bot
+            .send_message(self.chat_id.clone(), message)
+            .await;
+    }
+
+    /// Expose bot token for external alerting tasks (e.g. watchdog).
+    pub fn bot_token(&self) -> String {
+        self.bot_token.clone()
+    }
+
+    /// Expose chat ID for external alerting tasks (e.g. watchdog).
+    pub fn chat_id(&self) -> String {
+        self.chat_id.clone()
     }
 }
