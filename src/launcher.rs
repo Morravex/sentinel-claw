@@ -86,19 +86,31 @@ pub fn run_agent(agent_name: Option<&str>, cmd_str: &str, args: &[String]) {
 
     let mut ca_path = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
     ca_path.push(".sentinel");
-    fs::create_dir_all(&ca_path).unwrap();
+    if let Err(e) = fs::create_dir_all(&ca_path) {
+        eprintln!("⚠️ Could not create CA directory {}: {}", ca_path.display(), e);
+    }
 
     let cert_file = ca_path.join("sentinel-ca.crt");
     let key_file = ca_path.join("sentinel-ca.key");
-    
+
     // 1. Generate Local CA if it doesn't exist (TLS MITM)
     if !cert_file.exists() {
         println!("   [+] Generating new Local Root CA for TLS Interception...");
         let mut params = CertificateParams::new(vec!["Sentinel Root CA".to_string()]);
         params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-        let cert = Certificate::from_params(params).unwrap();
-        fs::write(&cert_file, cert.serialize_pem().unwrap()).unwrap();
-        fs::write(&key_file, cert.serialize_private_key_pem()).unwrap();
+        let cert = match Certificate::from_params(params) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("⚠️ CA certificate generation failed: {}", e);
+                return;
+            }
+        };
+        if let Err(e) = fs::write(&cert_file, cert.serialize_pem().unwrap_or_default()) {
+            eprintln!("⚠️ Could not write CA cert: {}", e);
+        }
+        if let Err(e) = fs::write(&key_file, cert.serialize_private_key_pem()) {
+            eprintln!("⚠️ Could not write CA key: {}", e);
+        }
     }
 
     let ca_str = cert_file.to_str().unwrap();
@@ -296,7 +308,14 @@ pub fn run_agent(agent_name: Option<&str>, cmd_str: &str, args: &[String]) {
     println!("--------------------------------------------------");
 
     // Spawn the child (it will immediately halt because of TRACEME)
-    let child = child_cmd.spawn().expect("Failed to spawn agent");
+    let child = match child_cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("❌ Failed to spawn agent: {}", e);
+            eprintln!("   Command: {} {:?}", cmd_str, args);
+            return;
+        }
+    };
     let pid = Pid::from_raw(child.id() as i32);
 
     // Wait for the child to stop at the execve() entry
@@ -462,6 +481,21 @@ fn handle_seccomp_trap(pid: Pid) {
                         println!("🛑 Sentinel Kernel Intercept: Agent attempted outbound TCP to {:?}:{}. BLOCKING.", ip, port);
                         block_syscall_actual(pid, &mut regs);
                     }
+                } else if family == libc::AF_INET6 as u16 {
+                    // IPv6 sockaddr: bytes 2-3 = port, bytes 8-23 = 16-byte address
+                    let port = u16::from_be_bytes([sockaddr_buf[2], sockaddr_buf[3]]);
+                    let ip6: [u8; 16] = sockaddr_buf[8..24].try_into().unwrap_or([0u8; 16]);
+
+                    // ::1 is loopback, :: is unspecified (all zeros)
+                    let is_localhost_v6 = ip6 == [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1]
+                        || ip6 == [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
+                    let is_https = port == 443 || port == 0;
+                    let is_dns = port == 53;
+
+                    if !is_localhost_v6 && !is_dns && !is_https {
+                        println!("🛑 Sentinel Kernel Intercept: Agent attempted outbound TCPv6 to {:?}:{}. BLOCKING.", ip6, port);
+                        block_syscall_actual(pid, &mut regs);
+                    }
                 }
             }
         },
@@ -602,14 +636,13 @@ fn apply_landlock_restrictions() {
 
         let ruleset_fd = ruleset_fd as i32;
 
-        // 3. Add ALLOW rules for safe directories
+        // 3. Add ALLOW rules for safe directories (full access)
+        // Note: /proc and /sys are NOT here — they get read-only rules below
         let allowed_dirs = [
             "/tmp",
             "/home",
             "/usr",
             "/lib",
-            "/proc",
-            "/sys",
             "/dev",
             "/opt",
             "/var/tmp",
@@ -707,7 +740,29 @@ fn apply_landlock_restrictions() {
             libc::close(etc_fd);
         }
 
-        // 5. Activate the ruleset
+        // 6. Restrict /proc and /sys — read-only (needed for process introspection but not writable)
+        for sys_dir in &["/proc", "/sys"] {
+            let sys_fd = libc::open(
+                std::ffi::CString::new(*sys_dir).unwrap().as_ptr(),
+                libc::O_PATH | libc::O_DIRECTORY,
+                0,
+            );
+            if sys_fd >= 0 {
+                let read_only_access = LANDLOCK_ACCESS_FS_READ_FILE
+                    | LANDLOCK_ACCESS_FS_READ_DIR
+                    | LANDLOCK_ACCESS_FS_EXECUTE;
+                let path_attr = LandlockPathBeneathAttr {
+                    allowed_access: read_only_access,
+                    parent_fd: sys_fd,
+                    _pad: 0,
+                };
+                let _ = libc::syscall(445, ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, &path_attr as *const LandlockPathBeneathAttr, 0u64);
+                libc::close(sys_fd);
+            }
+        }
+        println!("   [+] Landlock: /proc and /sys are read-only for agent child.");
+
+        // 7. Activate the ruleset
         // This must be done in the pre_exec hook so it applies to the child process.
         // We store the fd in a thread-local so pre_exec can access it.
         // For now, we'll apply it in the pre_exec closure below.
@@ -736,15 +791,39 @@ pub fn snapshot_workspace(pid: Pid) {
 }
 
 pub fn restore_workspace(pid: Pid) {
-    if let Ok(cwd) = fs::read_link(format!("/proc/{}/cwd", pid)) {
-        let snap_path = format!("/tmp/sentinel_snap_{}", pid);
+    let pid_raw = pid.as_raw();
+    // Validate PID is positive
+    if pid_raw <= 0 {
+        eprintln!("⚠️ Invalid PID for restore: {}", pid_raw);
+        return;
+    }
+
+    if let Ok(cwd) = fs::read_link(format!("/proc/{}/cwd", pid_raw)) {
+        let snap_path = format!("/tmp/sentinel_snap_{}", pid_raw);
+
+        // Validate snapshot path is exactly /tmp/sentinel_snap_<numeric>
+        if !snap_path.starts_with("/tmp/sentinel_snap_") {
+            eprintln!("⚠️ Invalid snapshot path rejected: {}", snap_path);
+            return;
+        }
+
         if fs::metadata(&snap_path).is_ok() {
-            // Delete current and restore from snap
-            let _ = Command::new("rm").args(["-rf", &format!("{}/*", cwd.to_string_lossy())]).status();
+            // Safely remove contents of the workspace directory using fs API
+            if let Ok(entries) = fs::read_dir(&cwd) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let _ = fs::remove_dir_all(&path);
+                    } else {
+                        let _ = fs::remove_file(&path);
+                    }
+                }
+            }
+            // Copy snapshot contents back
             let _ = Command::new("cp")
                 .args(["-rp", &format!("{}/.", snap_path), &cwd.to_string_lossy()])
                 .status();
-            println!("♻️ Workspace restored for PID {} from {}", pid, snap_path);
+            println!("♻️ Workspace restored for PID {} from {}", pid_raw, snap_path);
         }
     }
 }

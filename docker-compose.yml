@@ -1,6 +1,4 @@
-# 🛡️ SentinelClaw v0.0.1: Sentinel Security Appliance
-# Focus: Zero-Install Deployment. Bare-Metal Agent Support.
-
+# SentinelClaw v0.0.1: Sentinel Security Appliance
 
 services:
   sentinel-gateway:
@@ -8,43 +6,53 @@ services:
     container_name: sentinel-gateway
     restart: always
     ports:
-      # --- Sentinel Multi-Agent Mesh (8080-8089) ---
+      # Sentinel Multi-Agent Mesh (8080-8089)
       - "8080:8080" # Default Aggregator
-      - "8081:8081" # Hermes
-      - "8082:8082" # Aider
-      - "8083:8083" # AutoGPT
-      - "8084:8084" # BabyAGI
-      - "8085:8085" # GPThinker
-      - "8086:8086" # Meta
-      - "8087:8087" # Mistral
-      - "8088:8088" # Devin
-      - "8089:8089" # Custom / Default
+      - "8081:8081" # Agent 1
+      - "8082:8082" # Agent 2
+      - "8083:8083" # Agent 3
+      - "8084:8084" # Agent 4
+      - "8085:8085" # Agent 5
+      - "8086:8086" # Agent 6
+      - "8087:8087" # Agent 7
+      - "8088:8088" # Agent 8
+      - "8089:8089" # Agent 9
       - "3333:3333" # Sentinel Dashboard
     volumes:
       - ./sentinel.toml:/opt/sentinel-claw/sentinel.toml:ro
       - ./.env:/opt/sentinel-claw/.env
-      - ./sentinel.db:/opt/sentinel-claw/sentinel.db # Persistent Encrypted Mesh
+      - ./sentinel.db:/opt/sentinel-claw/sentinel.db
       - .env-openclaw:/opt/sentinel-claw/.env-openclaw
-      - .env-hermes:/opt/sentinel-claw/.env-hermes
-      - .env-aider:/opt/sentinel-claw/.env-aider
-      - .env-autogpt:/opt/sentinel-claw/.env-autogpt
-      - .env-babyagi:/opt/sentinel-claw/.env-babyagi
-      - .env-gpthinker:/opt/sentinel-claw/.env-gpthinker
-      - .env-meta:/opt/sentinel-claw/.env-meta
-      - .env-mistral:/opt/sentinel-claw/.env-mistral
-      - .env-devin:/opt/sentinel-claw/.env-devin
-      - .env-default:/opt/sentinel-claw/.env-default
-      - /tmp:/tmp # Shell Intercept Socket
+      - .env-agent1:/opt/sentinel-claw/.env-agent1
+      - .env-agent2:/opt/sentinel-claw/.env-agent2
+      - .env-agent3:/opt/sentinel-claw/.env-agent3
+      - .env-agent4:/opt/sentinel-claw/.env-agent4
+      - .env-agent5:/opt/sentinel-claw/.env-agent5
+      - .env-agent6:/opt/sentinel-claw/.env-agent6
+      - .env-agent7:/opt/sentinel-claw/.env-agent7
+      - .env-agent8:/opt/sentinel-claw/.env-agent8
+      - .env-agent9:/opt/sentinel-claw/.env-agent9
+      # NOTE: Do NOT mount /tmp — it's a container escape vector.
+      # Use named volumes or bind mounts to specific directories only.
     env_file:
       - .env
     environment:
       - RUST_LOG=info
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+        reservations:
+          memory: 128M
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=100M
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 5s
-
-# All Agent commands now route through their dedicated Sentinel port.
-# Materialization occurs transparently at the final execution hop.

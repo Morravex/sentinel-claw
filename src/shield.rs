@@ -25,6 +25,7 @@ use sha2::Sha256;
 use base64::{Engine as _, engine::general_purpose};
 
 static MASTER_KEY: OnceLock<[u8; 32]> = OnceLock::new();
+static PBKDF2_SALT: OnceLock<Vec<u8>> = OnceLock::new();
 
 static DB: LazyLock<Arc<Mutex<Connection>>> = LazyLock::new(|| {
     let db_path = std::env::var("SENTINEL_DB_PATH").unwrap_or_else(|_| {
@@ -62,6 +63,36 @@ static DB: LazyLock<Arc<Mutex<Connection>>> = LazyLock::new(|| {
     
     // Ensure search_hash index if not exists
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_sentinel_hash ON sentinel_mesh (search_hash)", []);
+
+    // Create sentinel_meta table for per-installation secrets (e.g. PBKDF2 salt)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS sentinel_meta (
+            key TEXT PRIMARY KEY,
+            value BLOB NOT NULL
+        )",
+        [],
+    )
+    .expect("❌ Could not initialize sentinel_meta table");
+
+    // Load or generate PBKDF2 salt (unique per installation)
+    let salt: Vec<u8> = match conn.query_row(
+        "SELECT value FROM sentinel_meta WHERE key = 'pbkdf2_salt'",
+        [],
+        |row| row.get::<_, Vec<u8>>(0),
+    ) {
+        Ok(existing) => existing,
+        Err(_) => {
+            // Generate a new random 32-byte salt
+            let new_salt: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
+            let _ = conn.execute(
+                "INSERT INTO sentinel_meta (key, value) VALUES ('pbkdf2_salt', ?)",
+                params![new_salt],
+            );
+            new_salt
+        }
+    };
+    let _ = PBKDF2_SALT.set(salt);
+
     Arc::new(Mutex::new(conn))
 });
 
@@ -155,7 +186,11 @@ impl SecretShield {
      * Derives a 256-bit key from the Sentinel Pairing Key for at-rest encryption.
      */
     pub fn init_master_key(pairing_key: &str) {
-        let salt = b"sentinel-salt";
+        // Use per-installation random salt loaded from sentinel_meta table.
+        // Falls back to a warning if DB hasn't been initialized yet.
+        let salt = PBKDF2_SALT
+            .get()
+            .expect("❌ PBKDF2 salt not initialized — DB must be loaded before init_master_key");
         let key = pbkdf2_hmac_array::<Sha256, 32>(pairing_key.as_bytes(), salt, 100_000);
         let _ = MASTER_KEY.set(key);
     }

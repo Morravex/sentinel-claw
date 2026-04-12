@@ -73,7 +73,13 @@ impl TelegramBridge {
 
         // Load Governance State from DB
         let conn_mutex = crate::shield::get_db_connection();
-        let conn = conn_mutex.lock().unwrap();
+        let conn = match conn_mutex.lock() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("DB lock poisoned in TelegramBridge::new: {}", e);
+                e.into_inner()
+            }
+        };
         
         // Load Safelist
         if let Ok(mut stmt) = conn.prepare("SELECT key FROM sentinel_governance WHERE category = 'safelist'") {

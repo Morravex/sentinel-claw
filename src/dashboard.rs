@@ -16,17 +16,67 @@ use axum::{
     routing::get,
     response::{Html, sse::{Sse, Event}, IntoResponse},
     Router,
+    extract::Request,
+    middleware::{self, Next},
+    http::{StatusCode, header},
 };
 use tokio_stream::Stream;
 use std::convert::Infallible;
 use crate::logger::{get_log_sender};
+use std::sync::OnceLock;
+
+static CSRF_TOKEN: OnceLock<String> = OnceLock::new();
+
+fn get_csrf_token() -> &'static str {
+    CSRF_TOKEN.get_or_init(|| {
+        use rand::Rng;
+        let token: String = rand::thread_rng()
+            .sample_iter(&rand::distributions::Alphanumeric)
+            .take(64)
+            .map(char::from)
+            .collect();
+        token
+    })
+}
+
+/// Middleware: Verify Bearer token on all /api/* routes
+async fn auth_middleware(request: Request, next: Next) -> impl IntoResponse {
+    let path = request.uri().path().to_string();
+
+    // Only enforce auth on API routes
+    if path.starts_with("/api/") {
+        let expected_token = std::env::var("SENTINEL_PAIRING_KEY").unwrap_or_default();
+        if expected_token.is_empty() {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Server misconfigured: no auth key").into_response();
+        }
+
+        let auth_header = request.headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        // Accept "Bearer <token>" format
+        let token_valid = auth_header
+            .strip_prefix("Bearer ")
+            .map(|t| t == expected_token)
+            .unwrap_or(false);
+
+        if !token_valid {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized: invalid or missing Bearer token").into_response();
+        }
+    }
+
+    next.run(request).await.into_response()
+}
 
 pub async fn start_dashboard_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let app = Router::new()
         .route("/", get(dashboard_html))
         .route("/api/logs", get(logs_stream))
         .route("/api/mappings", get(get_mappings))
-        .route("/api/keys", axum::routing::post(add_key_api));
+        .route("/api/keys", axum::routing::post(add_key_api))
+        .route("/api/csrf-token", get(get_csrf_token_handler))
+        .layer(middleware::from_fn(auth_middleware));
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3333").await?;
     println!("🌐 Sentinel Dashboard Live: http://localhost:3333");
@@ -34,20 +84,41 @@ pub async fn start_dashboard_server() -> Result<(), Box<dyn std::error::Error + 
     Ok(())
 }
 
+async fn get_csrf_token_handler() -> impl IntoResponse {
+    axum::response::Json(serde_json::json!({
+        "csrf_token": get_csrf_token()
+    }))
+}
+
 #[derive(serde::Deserialize)]
 struct AddKeyRequest {
     provider: String,
     key: String,
+    csrf_token: String,
 }
 
 async fn add_key_api(axum::Json(payload): axum::Json<AddKeyRequest>) -> impl IntoResponse {
+    // Verify CSRF token
+    if payload.csrf_token != *get_csrf_token() {
+        return (
+            StatusCode::FORBIDDEN,
+            axum::response::Json(serde_json::json!({
+                "status": "error",
+                "message": "Invalid CSRF token"
+            }))
+        ).into_response();
+    }
+
     use crate::shield::SecretShield;
     let ghost_id = SecretShield::add_global_secret(&payload.provider, &payload.key);
-    axum::response::Json(serde_json::json!({
-        "status": "success",
-        "ghost_id": ghost_id,
-        "message": format!("Key for {} vaulted successfully", payload.provider)
-    }))
+    (
+        StatusCode::OK,
+        axum::response::Json(serde_json::json!({
+            "status": "success",
+            "ghost_id": ghost_id,
+            "message": format!("Key for {} vaulted successfully", payload.provider)
+        }))
+    ).into_response()
 }
 
 async fn dashboard_html() -> Html<&'static str> {
@@ -338,7 +409,11 @@ async fn dashboard_html() -> Html<&'static str> {
                     <span id="log-count" style="color: var(--text-dim); font-size: 0.8rem;">0 events</span>
                 </div>
                 <div class="log-container" id="logs">
-                    <div class="log-entry"><span class="log-ts">00:00:00</span> <span class="log-lvl-info">[SYSM]</span> <span class="log-msg">Initializing Sentinel Telemetry Link...</span></div>
+                    <div class="log-entry">
+                        <span class="log-ts">00:00:00</span>
+                        <span class="log-lvl-info">[SYSM]</span>
+                        <span class="log-msg">Initializing Sentinel Telemetry Link...</span>
+                    </div>
                 </div>
             </div>
         </div>
@@ -353,6 +428,31 @@ async fn dashboard_html() -> Html<&'static str> {
         let mappingsCount = 0;
         let vetoCount = 0;
         let logCount = 0;
+        let csrfToken = '';
+
+        // Fetch CSRF token on load with auth
+        function getAuthHeaders(contentType) {
+            const token = sessionStorage.getItem('sentinel_token') || '';
+            const headers = { 'Authorization': 'Bearer ' + token };
+            if (contentType) headers['Content-Type'] = contentType;
+            return headers;
+        }
+
+        // Prompt for token on load
+        (function initAuth() {
+            const stored = sessionStorage.getItem('sentinel_token');
+            if (!stored) {
+                const input = prompt('Enter Sentinel Pairing Key to access dashboard:');
+                if (input) {
+                    sessionStorage.setItem('sentinel_token', input);
+                }
+            }
+            // Fetch CSRF token
+            fetch('/api/csrf-token', { headers: getAuthHeaders() })
+                .then(r => r.json())
+                .then(data => { csrfToken = data.csrf_token; })
+                .catch(() => {});
+        })();
 
         function vaultKey() {
             const provider = document.getElementById('vault-provider').value;
@@ -370,12 +470,17 @@ async fn dashboard_html() -> Html<&'static str> {
 
             fetch('/api/keys', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ provider, key })
+                headers: getAuthHeaders('application/json'),
+                body: JSON.stringify({ provider, key, csrf_token: csrfToken })
             })
             .then(r => r.json())
             .then(data => {
-                status.innerText = `✅ Success! ID: ${data.ghost_id}`;
+                if (data.status === 'error') {
+                    status.innerText = '❌ ' + data.message;
+                    status.style.color = '#ff3e3e';
+                    return;
+                }
+                status.innerText = '✅ Success! ID: ' + data.ghost_id;
                 status.style.color = 'var(--neon-green)';
                 document.getElementById('vault-key').value = '';
                 refreshMappings();
@@ -387,7 +492,7 @@ async fn dashboard_html() -> Html<&'static str> {
         }
 
         function refreshMappings() {
-            fetch('/api/mappings')
+            fetch('/api/mappings', { headers: getAuthHeaders() })
                 .then(r => r.json())
                 .then(data => {
                     mappingsCount = data.length;
@@ -399,22 +504,33 @@ async fn dashboard_html() -> Html<&'static str> {
         refreshMappings();
 
         // --- SUBSCRIBE TO LIVE LOGS (SSE) ---
-        const eventSource = new EventSource('/api/logs');
+        // EventSource doesn't support custom headers, so we pass token as query param
+        const tokenParam = sessionStorage.getItem('sentinel_token') || '';
+        const eventSource = new EventSource('/api/logs?token=' + encodeURIComponent(tokenParam));
         eventSource.onmessage = (event) => {
             const audit = JSON.parse(event.data);
             logCount++;
-            logCountEl.innerText = `${logCount} events`;
+            logCountEl.innerText = logCount + ' events';
 
             const entry = document.createElement('div');
             entry.className = 'log-entry';
             
-            let lvlClass = `log-lvl-${audit.level.toLowerCase()}`;
-            
-            entry.innerHTML = `
-                <span class="log-ts">${audit.timestamp.split(' ')[1]}</span>
-                <span class="${lvlClass}">[${audit.level.toUpperCase()}]</span>
-                <span class="log-msg">${audit.message}</span>
-            `;
+            // SECURITY: Use textContent instead of innerHTML to prevent XSS
+            const tsSpan = document.createElement('span');
+            tsSpan.className = 'log-ts';
+            tsSpan.textContent = audit.timestamp.split(' ')[1];
+
+            const lvlSpan = document.createElement('span');
+            lvlSpan.className = 'log-lvl-' + audit.level.toLowerCase();
+            lvlSpan.textContent = '[' + audit.level.toUpperCase() + ']';
+
+            const msgSpan = document.createElement('span');
+            msgSpan.className = 'log-msg';
+            msgSpan.textContent = audit.message;
+
+            entry.appendChild(tsSpan);
+            entry.appendChild(lvlSpan);
+            entry.appendChild(msgSpan);
 
             logContent.prepend(entry);
             if (logContent.children.length > 200) logContent.lastChild.remove();
@@ -437,11 +553,18 @@ async fn dashboard_html() -> Html<&'static str> {
     "#)
 }
 
-async fn logs_stream() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let tx = get_log_sender();
-    let mut rx = tx.subscribe();
+async fn logs_stream(axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    // Verify token from query param for SSE (EventSource doesn't support headers)
+    let expected_token = std::env::var("SENTINEL_PAIRING_KEY").unwrap_or_default();
+    let provided_token = params.get("token").map(|s| s.as_str()).unwrap_or("");
+    let authorized = !expected_token.is_empty() && provided_token == expected_token;
 
     let stream = async_stream::stream! {
+        if !authorized {
+            return;
+        }
+        let tx = get_log_sender();
+        let mut rx = tx.subscribe();
         while let Ok(log) = rx.recv().await {
             yield Ok(Event::default().data(serde_json::to_string(&log).unwrap()));
         }
@@ -452,15 +575,32 @@ async fn logs_stream() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
 
 async fn get_mappings() -> impl IntoResponse {
     let db = crate::shield::get_db_connection();
-    let conn = db.lock().unwrap();
+    let conn = match db.lock() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("DB lock poisoned in get_mappings: {}", e);
+            e.into_inner()
+        }
+    };
     
-    let mut stmt = conn.prepare("SELECT id, category FROM sentinel_mesh").unwrap();
-    let rows: Vec<serde_json::Value> = stmt.query_map([], |row| {
+    let mut stmt = match conn.prepare("SELECT id, category FROM sentinel_mesh") {
+        Ok(s) => s,
+        Err(e) => {
+            return axum::response::Json(serde_json::json!({"error": format!("Query prepare failed: {}", e)}));
+        }
+    };
+
+    let rows: Vec<serde_json::Value> = match stmt.query_map([], |row| {
         Ok(serde_json::json!({
             "id": row.get::<_, String>(0)?,
             "category": row.get::<_, String>(1)?,
         }))
-    }).unwrap().filter_map(|r| r.ok()).collect();
+    }) {
+        Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
+        Err(e) => {
+            return axum::response::Json(serde_json::json!({"error": format!("Query failed: {}", e)}));
+        }
+    };
 
-    axum::response::Json(rows)
+    axum::response::Json(serde_json::Value::Array(rows))
 }

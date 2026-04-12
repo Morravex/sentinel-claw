@@ -248,20 +248,18 @@ fn guard_single_instance() {
     if let Ok(old_pid_str) = std::fs::read_to_string(pid_file) {
         if let Ok(old_pid) = old_pid_str.trim().parse::<u32>() {
             if old_pid != current_pid {
-                // Verify the PID is actually alive and is a Sentinel process
+                // Verify the PID is actually alive AND is a Sentinel process
+                // This prevents killing an unrelated process that reused the PID (TOCTOU fix)
                 #[cfg(unix)]
                 {
-                    use std::process::Command;
-                    let is_alive = Command::new("kill").arg("-0").arg(old_pid.to_string()).status().map(|s| s.success()).unwrap_or(false);
-                    
-                    if is_alive {
-                        // Optional: Check if process name contains 'sentinel'
-                        let comm = std::fs::read_to_string(format!("/proc/{}/comm", old_pid)).unwrap_or_default();
-                        if comm.contains("sentinel") {
-                            println!("⚠️ Sentinel Conflict: Active instance (PID {}) detected. Preempting...", old_pid);
-                            let _ = Command::new("kill").arg("-9").arg(old_pid.to_string()).status();
-                            std::thread::sleep(Duration::from_millis(500));
-                        }
+                    // Check /proc/<pid>/comm first — if the process doesn't exist,
+                    // read_to_string will fail and we skip. If it exists, verify the name.
+                    let comm = std::fs::read_to_string(format!("/proc/{}/comm", old_pid)).unwrap_or_default();
+                    if comm.trim().contains("sentinel") {
+                        println!("⚠️ Sentinel Conflict: Active instance '{}' (PID {}) detected. Preempting...", comm.trim(), old_pid);
+                        use std::process::Command;
+                        let _ = Command::new("kill").arg("-9").arg(old_pid.to_string()).status();
+                        std::thread::sleep(Duration::from_millis(500));
                     }
                 }
             }
