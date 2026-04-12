@@ -73,7 +73,7 @@ echo "   ✅ Sentinel .env created."
 
 # 2.1 Agent Vault-Mesh (8080-8089)
 echo "📦 Initializing Agent Isolation Mesh..."
-AGENTS=("openclaw" "hermes" "aider" "autogpt" "babyagi" "gpthinker" "meta" "mistral" "devin" "default")
+AGENTS=("openclaw" "agent1" "agent2" "agent3" "agent4" "agent5" "agent6" "agent7" "agent8" "default")
 for agent in "${AGENTS[@]}"; do
     if [ ! -f ".env-$agent" ]; then
         cat <<EOF > ".env-$agent"
