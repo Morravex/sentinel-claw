@@ -30,6 +30,13 @@ pub struct SentinelConfig {
 pub struct GeneralConfig {
     pub mode: String,
     pub socket_path: String,
+    pub dashboard_port: Option<u16>,
+}
+
+impl GeneralConfig {
+    pub fn get_dashboard_port(&self) -> u16 {
+        self.dashboard_port.unwrap_or(3333)
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -49,6 +56,13 @@ pub struct PolicyConfig {
     pub pii_redaction: bool,
     pub deny_list: Vec<String>,
     pub restricted_paths: Vec<String>,
+    pub sensitive_parsing: Option<bool>,
+}
+
+impl PolicyConfig {
+    pub fn is_sensitive_parsing_enabled(&self) -> bool {
+        self.sensitive_parsing.unwrap_or(true)
+    }
 }
 
 impl SentinelConfig {

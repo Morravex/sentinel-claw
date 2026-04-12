@@ -2,8 +2,8 @@
 
 [general]
 mode = "hybrid" # Options: "local_only", "hybrid", "cloud_only"
-sensitive_parsing = true
 socket_path = "/tmp/sentinel_test.sock"
+dashboard_port = 3333
 
 [agents]
 openclaw = 8080
@@ -28,6 +28,7 @@ base_url = "https://openrouter.ai/api/v1"
 
 [policy]
 pii_redaction = true # [PRODUCTION] Redacts E-mails/Phones.
+sensitive_parsing = true # Enable sensitive content parsing/redaction
 deny_list = ["rm -rf /", "sudo", "unlink", "truncate", "shred", "pkill -f sentinel"]
 restricted_paths = [".env", "/etc/passwd", "/etc/shadow", ".git", ".openclaw", "id_rsa", "config"]
 

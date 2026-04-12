@@ -16,6 +16,60 @@ use tokio::sync::broadcast;
 use chrono::Local;
 use serde::Serialize;
 use std::sync::OnceLock;
+use std::sync::Mutex;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::fs;
+
+const MAX_LOG_SIZE: u64 = 10 * 1024 * 1024; // 10MB
+const MAX_ROTATED_FILES: u32 = 3;
+
+static LOG_FILE: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn get_log_path() -> String {
+    std::env::var("SENTINEL_LOG_PATH").unwrap_or_else(|_| "sentinel.log".to_string())
+}
+
+fn rotate_logs(path: &str) {
+    // Remove oldest rotated file if it exists
+    let oldest = format!("{}.{}", path, MAX_ROTATED_FILES);
+    let _ = fs::remove_file(&oldest);
+
+    // Shift existing rotated files: .2 -> .3, .1 -> .2
+    for i in (1..MAX_ROTATED_FILES).rev() {
+        let from = format!("{}.{}", path, i);
+        let to = format!("{}.{}", path, i + 1);
+        if fs::metadata(&from).is_ok() {
+            let _ = fs::rename(&from, &to);
+        }
+    }
+
+    // Rename current log to .1
+    let _ = fs::rename(path, format!("{}.1", path));
+}
+
+fn write_to_file(line: &str) {
+    // Acquire the lock to ensure serial writes
+    let guard = LOG_FILE.get_or_init(|| Mutex::new(()));
+    let _lock = guard.lock().unwrap();
+
+    let path = get_log_path();
+
+    // Check if rotation is needed
+    if let Ok(metadata) = fs::metadata(&path) {
+        if metadata.len() >= MAX_LOG_SIZE {
+            rotate_logs(&path);
+        }
+    }
+
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(file, "{}", line);
+    }
+}
 
 #[derive(Debug, Serialize, Clone)]
 pub struct AuditLog {
@@ -73,6 +127,30 @@ pub fn log_event(source: LogSource, level: LogLevel, message: &str, details: Opt
     };
 
     println!("{}: {} {}", log.timestamp, color, log.message);
+
+    // Write to log file
+    let file_line = format!(
+        "{}: [{}] [{}] {}{}",
+        log.timestamp,
+        match log.level {
+            LogLevel::Veto => "VETO",
+            LogLevel::Secret => "SHIELD",
+            LogLevel::Warn => "WARN",
+            LogLevel::Error => "ERROR",
+            LogLevel::Info => "INFO",
+        },
+        match log.source {
+            LogSource::Proxy => "Proxy",
+            LogSource::Intercept => "Intercept",
+            LogSource::Shield => "Shield",
+            LogSource::Harness => "Harness",
+            LogSource::Bridge => "Bridge",
+            LogSource::Vault => "Vault",
+        },
+        log.message,
+        log.details.as_deref().map(|d| format!(" | {}", d)).unwrap_or_default(),
+    );
+    write_to_file(&file_line);
 
     // Broadcast to subscribers
     let tx = get_log_sender();

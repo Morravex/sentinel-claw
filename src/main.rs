@@ -40,7 +40,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // -0.5. Single Instance Enforcement (Latest Wins)
     guard_single_instance();
-    
+
+    // 0. Handle CLI subcommands that don't need pairing key or config
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() >= 2 {
+        match args[1].as_str() {
+            "version" => {
+                println!("SentinelClaw v0.0.1");
+                return Ok(());
+            }
+            "status" => {
+                print_status();
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     // 0. Initialize Encrypted Mapping Vault
     let db_path = std::env::var("SENTINEL_DB_PATH").unwrap_or_else(|_| "sentinel.db".to_string());
     if std::path::Path::new(&db_path).is_dir() {
@@ -54,7 +70,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     shield::SecretShield::init_master_key(&pairing_key);
 
     // 0.1 [CLI MODE] Sentinel Run: Global Secret Materialization
-    let args: Vec<String> = std::env::args().collect();
     if args.len() > 2 && args[1] == "run" {
         let mut arg_idx = 2;
         let mut forced_mode: Option<String> = None;
@@ -176,7 +191,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 0.2 Start Streaming Logger (Server Mode Only)
     tokio::spawn(logger::start_log_stream());
-    tokio::spawn(dashboard::start_dashboard_server());
     
     // 1. Load Config
     let config_path = std::env::var("SENTINEL_CONFIG_PATH").unwrap_or_else(|_| "sentinel.toml".to_string());
@@ -187,6 +201,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config::SentinelConfig::load_from(example_path)
             .expect(&format!("❌ Could not load config from {} or {}", config_path, example_path))
     });
+
+    // 1.1 Start Dashboard with configured port
+    let dashboard_port = config.general.get_dashboard_port();
+    tokio::spawn(dashboard::start_dashboard_server(dashboard_port));
     
     // 2. Initialize Components
     let vault = SentinelVault::new();
@@ -239,6 +257,93 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🛡️ SentinelClaw v0.0.1 Shutting Down...");
     let _ = std::fs::remove_file("/tmp/sentinel.pid");
     Ok(())
+}
+
+fn print_status() {
+    let pid_file = "/tmp/sentinel.pid";
+    println!("┌──────────────────────────────────────────┐");
+    println!("│        SentinelClaw v0.0.1 Status        │");
+    println!("├──────────────────────────────────────────┤");
+
+    match std::fs::read_to_string(pid_file) {
+        Ok(pid_str) => {
+            let pid_str = pid_str.trim();
+            match pid_str.parse::<u32>() {
+                Ok(pid) => {
+                    // Check if process is alive via /proc
+                    let alive = std::path::Path::new(&format!("/proc/{}", pid)).exists();
+                    if alive {
+                        // Read uptime from /proc/<pid>/stat (field 22 = starttime in clock ticks)
+                        let uptime_str = if let Ok(stat) = std::fs::read_to_string(format!("/proc/{}/stat", pid)) {
+                            // Extract starttime (field 22) and compute uptime
+                            let parts: Vec<&str> = stat.split_whitespace().collect();
+                            if parts.len() >= 22 {
+                                if let Ok(start_ticks) = parts[21].parse::<u64>() {
+                                    // Read system boot time from /proc/stat
+                                    let ticks_per_sec = 100u64; // sysconf(_SC_CLK_TCK) default
+                                    if let Ok(uptime_contents) = std::fs::read_to_string("/proc/uptime") {
+                                        let uptime_secs: u64 = uptime_contents
+                                            .split_whitespace()
+                                            .next()
+                                            .and_then(|s| s.parse::<f64>().ok())
+                                            .map(|f| f as u64)
+                                            .unwrap_or(0);
+                                        let boot_ticks = uptime_secs * ticks_per_sec;
+                                        let proc_uptime_secs = (boot_ticks - start_ticks) / ticks_per_sec;
+                                        let days = proc_uptime_secs / 86400;
+                                        let hours = (proc_uptime_secs % 86400) / 3600;
+                                        let mins = (proc_uptime_secs % 3600) / 60;
+                                        if days > 0 {
+                                            format!("{}d {}h {}m", days, hours, mins)
+                                        } else if hours > 0 {
+                                            format!("{}h {}m", hours, mins)
+                                        } else {
+                                            format!("{}m", mins)
+                                        }
+                                    } else {
+                                        "unknown".to_string()
+                                    }
+                                } else {
+                                    "unknown".to_string()
+                                }
+                            } else {
+                                "unknown".to_string()
+                            }
+                        } else {
+                            "unknown".to_string()
+                        };
+
+                        println!("│ PID:       {:<30}│", pid);
+                        println!("│ Status:    {:<30}│", "🟢 Running");
+                        println!("│ Uptime:    {:<30}│", uptime_str);
+                    } else {
+                        println!("│ PID:       {:<30}│", pid);
+                        println!("│ Status:    {:<30}│", "🔴 Not Running (stale PID)");
+                    }
+                }
+                Err(_) => {
+                    println!("│ PID file:  {:<30}│", "corrupt");
+                    println!("│ Status:    {:<30}│", "🔴 Unknown");
+                }
+            }
+        }
+        Err(_) => {
+            println!("│ PID file:  {:<30}│", "not found");
+            println!("│ Status:    {:<30}│", "🔴 Not Running");
+        }
+    }
+
+    // Check proxy health on port 8080
+    let proxy_ok = std::process::Command::new("curl")
+        .args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "--connect-timeout", "2", "http://127.0.0.1:8080/health"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|code| code == "200")
+        .unwrap_or(false);
+
+    println!("│ Proxy:     {:<30}│", if proxy_ok { "🟢 Healthy (8080)" } else { "🔴 Unreachable (8080)" });
+    println!("└──────────────────────────────────────────┘");
 }
 
 fn guard_single_instance() {

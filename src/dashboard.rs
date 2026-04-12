@@ -69,7 +69,7 @@ async fn auth_middleware(request: Request, next: Next) -> impl IntoResponse {
     next.run(request).await.into_response()
 }
 
-pub async fn start_dashboard_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn start_dashboard_server(port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let app = Router::new()
         .route("/", get(dashboard_html))
         .route("/api/logs", get(logs_stream))
@@ -78,8 +78,9 @@ pub async fn start_dashboard_server() -> Result<(), Box<dyn std::error::Error + 
         .route("/api/csrf-token", get(get_csrf_token_handler))
         .layer(middleware::from_fn(auth_middleware));
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3333").await?;
-    println!("🌐 Sentinel Dashboard Live: http://localhost:3333");
+    let addr = format!("0.0.0.0:{}", port);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    println!("🌐 Sentinel Dashboard Live: http://localhost:{}", port);
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -129,7 +130,6 @@ async fn dashboard_html() -> Html<&'static str> {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>🛡️ Sentinel Dashboard | Security Appliance</title>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <style>
         :root {
             --bg: #0a0a0f;
@@ -146,7 +146,7 @@ async fn dashboard_html() -> Html<&'static str> {
             padding: 0;
             background: var(--bg);
             color: var(--text-main);
-            font-family: 'Outfit', sans-serif;
+            font-family: 'Outfit', system-ui, -apple-system, sans-serif;
             overflow: hidden;
             display: flex;
             height: 100vh;
@@ -233,7 +233,7 @@ async fn dashboard_html() -> Html<&'static str> {
             border-radius: 8px;
             padding: 0.8rem;
             color: white;
-            font-family: 'JetBrains Mono', monospace;
+            font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', monospace;
             outline: none;
         }
 
@@ -301,7 +301,7 @@ async fn dashboard_html() -> Html<&'static str> {
             background: rgba(0, 0, 0, 0.3);
             border-radius: 12px;
             padding: 1rem;
-            font-family: 'JetBrains Mono', monospace;
+            font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', monospace;
             font-size: 13px;
             overflow-y: auto;
             display: flex;

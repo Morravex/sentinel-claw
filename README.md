@@ -147,12 +147,18 @@ export OPENAI_BASE_URL=http://localhost:8080
 # materializes the real API key, forwards it, then scrubs.
 ```
 
-### Bare-Metal Run
-
-Execute any command with full kernel-level network isolation:
+### CLI Commands
 
 ```bash
-# All network calls are trapped and routed through Sentinel
+# Show version
+sentinel version
+# SentinelClaw v0.0.1
+
+# Check status of running instance
+sentinel status
+# Shows PID, uptime, proxy health
+
+# Execute with full kernel-level isolation
 sentinel run python3 agent.py
 
 # With autonomy override
@@ -177,6 +183,7 @@ After setup, message your bot to manage Sentinel remotely:
 | `/allowlist` | View trusted command patterns |
 | `/clear_mesh` | Emergency: purge all Ghost ID mappings |
 | `/stop` | Emergency shutdown |
+| `/autostrict` | Toggle auto-strict mode (strict on all new connections) |
 
 ### Dashboard
 
@@ -277,9 +284,9 @@ sentinel-claw/
 │   ├── harness.rs             # Intent audit, cache layer
 │   ├── bridge.rs              # Telegram bot (approve/deny, governance)
 │   ├── launcher.rs            # Seccomp-BPF, ptrace, Landlock, TLS MITM
-│   ├── watchdog.rs            # Self-protection integrity monitor
-│   ├── dashboard.rs           # Real-time SSE web dashboard
-│   └── logger.rs              # Structured audit log broadcaster
+│   ├── dashboard.rs           # Real-time SSE web dashboard (auth + CSRF)
+│   ├── watchdog.rs            # Self-protection integrity monitor (30s interval)
+│   └── logger.rs              # Structured audit log + file logging with rotation
 └── tests/
     └── shield_tests.rs        # Unit tests (entropy, patterns, shell audit)
 ```
